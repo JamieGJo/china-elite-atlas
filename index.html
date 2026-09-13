@@ -4673,6 +4673,64 @@ function t2CityMatch(p){
   return null;
 }
 function t2CityOf(p){ const m=t2CityMatch(p); return m?m.city:null; }
+// Same idea as UNI_LAYOUT/citySketch above (institutions are recorded as NAMES with nothing to
+// draw a real sub-city map from — x/y are fractions of a square placed by which general part of
+// the city an institution is actually in: Haidian's university cluster in the northwest, the
+// think-tank/ministry cluster further east and south around the diplomatic quarter). Kept as its
+// own table rather than reusing UNI_LAYOUT because these are ministries and think tanks as well
+// as universities, keyed by t2InstLabel's own canonical names (must match verbatim or a dot is
+// silently dropped, same convention as UNI_LAYOUT's own comment). Built only for the two cities
+// with enough distinct institutions to make a layout worth drawing — t2CitySketch's own
+// pts.length<2 guard means a single-institution city (Nanjing, Chengdu, Suzhou) just skips it and
+// falls back to the plain grouped list, no special-casing needed here.
+const T2_CITY_LAYOUT = {
+  Beijing: {
+    "Peking University":[0.14,0.28], "Tsinghua University":[0.22,0.22],
+    "Renmin University of China":[0.28,0.40],
+    "State Council":[0.42,0.34], "Ministry of State Security":[0.44,0.24],
+    "China Institute for Innovation and Development Strategy":[0.44,0.54],
+    "Ministry of Foreign Affairs":[0.66,0.28],
+    "China Institute of International Studies (CIIS)":[0.64,0.36],
+    "Chinese People's Institute of Foreign Affairs (CPIFA)":[0.70,0.42],
+    "Chinese Academy of Social Sciences (CASS)":[0.56,0.44],
+    "Center for China and Globalization (CCG)":[0.60,0.56],
+    "China Foreign Affairs University":[0.56,0.68],
+    "Charhar Institute":[0.68,0.60],
+  },
+  Shanghai: {
+    "Fudan University":[0.66,0.24],
+    "Shanghai Institutes for International Studies (SIIS)":[0.52,0.56],
+  },
+};
+function t2CitySketch(city, groups){
+  const layout=T2_CITY_LAYOUT[city]; if(!layout) return "";
+  const pts=groups.map(([inst,people])=>[inst,people.length,layout[inst]]).filter(p=>p[2]);
+  if(pts.length<2) return "";
+  const mx=Math.max(...pts.map(p=>p[1])), W=260, H=190;
+  const dots=pts.map(([inst,n,xy],i)=>{
+    const x=(xy[0]*W).toFixed(0), y=(xy[1]*H).toFixed(0), r=4+7*Math.sqrt(n/mx);
+    return `<a href="#t2inst-${esc(slugify(inst))}" onclick="document.getElementById('t2inst-${esc(slugify(inst))}')?.scrollIntoView({behavior:'smooth',block:'start'});return false;">
+      <circle cx="${x}" cy="${y}" r="${r.toFixed(1)}"><title>${esc(inst)} — ${n} ${n===1?"person":"people"}</title></circle>
+      <text x="${x}" y="${(+y+2.6).toFixed(1)}" text-anchor="middle">${i+1}</text>
+    </a>`;
+  }).join("");
+  const key = pts.map(([inst,n],i)=>
+    `<a href="#t2inst-${esc(slugify(inst))}" onclick="document.getElementById('t2inst-${esc(slugify(inst))}')?.scrollIntoView({behavior:'smooth',block:'start'});return false;">
+      <b>${i+1}</b> ${esc(inst)} <span class="note">${n}</span></a>`).join("");
+  return `<div class="citysketch"><svg viewBox="0 0 ${W} ${H}" role="img"
+      aria-label="Schematic layout of institutions in ${esc(city)}">${dots}</svg>
+    <div class="citykey">${key}</div>
+    <p class="note">Roughly where each institution sits relative to the others in ${esc(city)} —
+    a hand-placed sketch by district, not a scaled or surveyed map. Hover a dot, or click a dot
+    or a name below, to jump to that group.</p></div>`;
+}
+// Swaps the map area from the national dot-map to the city sketch — a real "zoom in", not a
+// panel appearing alongside the national view, so the reader's attention goes to the city that
+// was just clicked rather than having to look past the whole-country map to find it. The back
+// button re-runs t2DrawMap(), which rebuilds the national map from scratch (cheap, 25 people).
+function t2ZoomToCity(city, sketchHtml){
+  $("#t2MapSvgWrap").innerHTML = `<button class="zoomback" onclick="t2DrawMap()">↺ China map</button>${sketchHtml}`;
+}
 function t2DrawMap(){
   const byCity=new Map();
   TRACK_TWO.forEach(p=>{ const m=t2CityMatch(p); if(m) (byCity.get(m.city)||byCity.set(m.city,[]).get(m.city)).push({p,inst:m.inst}); });
@@ -4688,20 +4746,30 @@ function t2DrawMap(){
   $("#t2MapSvgWrap").querySelectorAll("circle.cdot").forEach(el=>el.onclick=()=>t2CityPanel(el.dataset.city,byCity));
   const unplaced=TRACK_TWO.length-[...byCity.values()].reduce((s,v)=>s+v.length,0);
   const note=$("#t2MapWrap .note");
-  if(unplaced && note) note.textContent+=` ${unplaced} not shown here — based overseas, or an institution this map can't place.`;
+  // Rebuilt from a fixed base string on every call, not appended to — t2ZoomToCity's back
+  // button calls this function repeatedly, and an earlier version of this line used `+=`, which
+  // would have grown a fresh copy of the "not shown here" sentence onto the note every time the
+  // reader zoomed out, an easy bug to miss until the map view had been opened and closed a few
+  // times in one sitting.
+  if(note) note.textContent = "Where each person is based, from their current institution — dot size is how many people are there. Click a city."
+    + (unplaced ? ` ${unplaced} not shown here — based overseas, or an institution this map can't place.` : "");
 }
 // A city panel with several institutions (Beijing) reads as a flat wall of 20+ names unless it's
 // broken down by WHERE each person works there — the same "just list them" problem this pass
 // already fixed for the org tree and for issue-panel people lists. Grouped by t2InstLabel, largest
 // institution first; a one-institution city (Shanghai, Nanjing, Chengdu, Suzhou) just renders one
-// group, so this doesn't add a step for the cities that don't need it.
+// group, so this doesn't add a step for the cities that don't need it. Where a hand-placed layout
+// exists (Beijing, Shanghai) the national map also zooms into a schematic city sketch — see
+// t2CitySketch/t2ZoomToCity above.
 function t2CityPanel(city, byCity){
   const rows=byCity.get(city)||[];
   const byInst=new Map();
   rows.forEach(({p,inst})=>{ const label=t2InstLabel(inst); (byInst.get(label)||byInst.set(label,[]).get(label)).push(p); });
   const groups=[...byInst.entries()].sort((a,b)=>b[1].length-a[1].length);
+  const sketch=t2CitySketch(city, groups);
+  if(sketch) t2ZoomToCity(city, sketch);
   $("#t2Drop").innerHTML=`<h3 style="margin-top:14px">${esc(city)} <span class="note">${rows.length}</span></h3>
-    ${groups.map(([inst,ppl])=>`<div class="field"><div class="k">${esc(inst)} <span class="note">(${ppl.length})</span></div>
+    ${groups.map(([inst,ppl])=>`<div class="field" id="t2inst-${esc(slugify(inst))}"><div class="k">${esc(inst)} <span class="note">(${ppl.length})</span></div>
       <div class="minigrid">${ppl.map(p=>{ const c0=(p.current_posts||[])[0];
         const initials=(p.name_en.value||"?").split(" ").filter(w=>w[0]===w[0].toUpperCase()).map(w=>w[0]).slice(0,2).join("");
         return `<button class="minicard" onclick="t2Drop('${esc(p.person_id)}')"><span class="mph">${esc(initials)}</span>
