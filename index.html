@@ -201,6 +201,12 @@ h3{font:600 15px/1.3 Georgia,serif;margin:22px 0 6px}
 .mapwrap circle.dot{fill:var(--accent);fill-opacity:.85;stroke:var(--card);stroke-width:.6;pointer-events:none}
 .mapwrap circle.cdot{fill:var(--rust);fill-opacity:.9;stroke:var(--card);stroke-width:.7;cursor:pointer}
 .mapwrap circle.cdot:hover{fill-opacity:1;stroke:var(--ink);stroke-width:1.1}
+/* The dot (or path) most recently clicked — see mapSelect(). A ring drawn OUTSIDE the dot's own
+   fill, so it stays legible however small the dot has scaled to, plus the containing province or
+   country gets a matching-colour outline so the reader can see the region it sits in without the
+   view itself having to move. */
+.mapwrap circle.sel{stroke:var(--ink);stroke-width:2px;filter:drop-shadow(0 0 3px var(--accent))}
+.mapwrap path.sel{stroke:var(--accent)!important;stroke-width:2.5px!important}
 .mapwrap text.clab{font:600 9px var(--mono);fill:var(--ink);pointer-events:none;opacity:.8}
 .mapwrap svg{transition:none}
 /* z-index 7, ABOVE .mapover's 6: on a narrow viewport the country/province panel floats over
@@ -1990,6 +1996,18 @@ function wireMapPanZoom(svg, fullW, fullH, backBtn){
   // for EVERY country/province would otherwise have to be embedded and rendered up front for
   // no visible gain. Queried lazily (once, on first need) because not every map wired through
   // this function carries any data-hi paths at all.
+  // City/posting dots carry a FIXED radius in SVG user-space units, so zooming in (shrinking the
+  // viewBox) makes them cover proportionally MORE of the visible frame — at deep zoom they balloon
+  // into oversized, blurry-edged blobs (Jamie, 2026-09-13: "the red circles are too big and blurry
+  // when zoomed in"). Rescaled here on every viewBox change so their ON-SCREEN size stays roughly
+  // constant instead: r = (radius at full zoom-out) * (current viewBox width / full width).
+  let dotEls = null;
+  function updateDotScale(){
+    if(dotEls === null) dotEls = [...svg.querySelectorAll("circle[data-r]")];
+    if(!dotEls.length) return;
+    const s = vb[2] / fullW;
+    dotEls.forEach(c => c.setAttribute("r", (+c.dataset.r * s).toFixed(2)));
+  }
   let lodPaths = null, lodMode = "lo";
   function updateLOD(){
     const want = (vb[2] / fullW) < 0.28 ? "hi" : "lo";
@@ -2010,6 +2028,7 @@ function wireMapPanZoom(svg, fullW, fullH, backBtn){
     svg.setAttribute("viewBox", vb.map(n => n.toFixed(1)).join(" "));
     if(backBtn) backBtn.hidden = vb[2] >= fullW - 0.5;
     updateLOD();
+    updateDotScale();
   }
   function toSvgXY(clientX, clientY){
     const r = svg.getBoundingClientRect();
@@ -2077,6 +2096,17 @@ function wireMapPanZoom(svg, fullW, fullH, backBtn){
   apply();
   return api;
 }
+// Marks which dot (and, where known, which province/country shape it sits inside) was last
+// clicked — WITHOUT moving the view. Jamie, 2026-09-13: clicking a city dot used to re-centre and
+// zoom the map onto it (zoomToPoint), and that jump was itself what made "where is this circle"
+// confusing — the frame changed before the reader could register where the dot had been. Selection
+// now just paints the dot and its containing shape, leaving the current pan/zoom exactly as it was.
+function mapSelect(svg, circleEl, pathEl){
+  if(!svg) return;
+  svg.querySelectorAll(".sel").forEach(el=>el.classList.remove("sel"));
+  if(circleEl) circleEl.classList.add("sel");
+  if(pathEl) pathEl.classList.add("sel");
+}
 
 /* ---------- origins: birth and education, plus one person's path ---------- */
 let ORIG_MODE="birth", ORIG_DRAWN={};
@@ -2141,7 +2171,9 @@ function drawOrigins(){
   const cdotFn=mode==="birth"?"cityPanel":"eduCityPanel";
   const dots=cities.map((c,i)=>{
     const k=c.people.length, r=(1.7+2.9*Math.sqrt(k/cmx)).toFixed(1);
-    return `<circle class="cdot" cx="${c.cx}" cy="${c.cy}" r="${r}" data-c="${i}"><title>${esc(c.n)}${c.prov?", "+esc(c.prov):""} — ${k} ${k===1?"person":"people"}</title></circle>`;
+    // data-r is the reference radius wireMapPanZoom's updateDotScale() rescales FROM on every
+    // zoom change; the plain r= is just its value at initial (fully zoomed-out) load.
+    return `<circle class="cdot" cx="${c.cx}" cy="${c.cy}" r="${r}" data-r="${r}" data-c="${i}"${c.prov?` data-prov="${esc(c.prov)}"`:""}><title>${esc(c.n)}${c.prov?", "+esc(c.prov):""} — ${k} ${k===1?"person":"people"}</title></circle>`;
   }).join("");
   // Label the biggest, but skip any that would land on a label already placed — Beijing and
   // Tianjin are 110 km apart and their names collided into one unreadable smear.
@@ -2158,11 +2190,15 @@ function drawOrigins(){
   const origPZ = wireMapPanZoom($("#origsvg"), MC.W, MC.H, $("#origwrap .zoomback"));
   $("#origwrap").querySelectorAll("path").forEach(el=>el.onclick=e=>{
     if(origPZ.wasDragged()) return;
+    mapSelect($("#origsvg"), null, el);
     zoomToProvince("#origsvg", el); origPanel(el.dataset.p,e);});
+  // No zoomToPoint here any more (see mapSelect's own comment) — the dot and its province light
+  // up in place, at whatever zoom level the reader already had, instead of the view jumping.
   $("#origwrap").querySelectorAll("circle.cdot").forEach(el=>el.onclick=e=>{
     e.stopPropagation();
     if(origPZ.wasDragged()) return;
-    zoomToPoint("#origsvg", +el.getAttribute("cx"), +el.getAttribute("cy"));
+    const provPath=el.dataset.prov ? $("#origsvg").querySelector(`path[data-p="${CSS.escape(el.dataset.prov)}"]`) : null;
+    mapSelect($("#origsvg"), el, provPath);
     window[cdotFn](+el.dataset.c,e);});
   const nb=MN.filter(n=>n.bregion).length, ncity=MN.filter(n=>fx(n.id).birth_city).length;
   const placed=(MC.cities||[]).length, unplaced=MC.city_unplaced||0;
@@ -2380,20 +2416,37 @@ function renderIssues(){
 }
 function MNIssueMentions(){ return MN.reduce((a,n)=>a+((fx(n.id).issues_raw||[]).length),0); }
 function MNIssueDistinct(){ const s=new Set(); MN.forEach(n=>(fx(n.id).issues_raw||[]).forEach(x=>s.add(String(x).trim()))); return s.size; }
+// The issue picker's own key ("Artificial intelligence", "Taiwan", …) is drawn from
+// fx(n.id).issues, which is script 15's controlled ISSUES list — the SAME list script 22
+// (briefing_podium.py) imports verbatim and ships its matching regex for to the page as
+// BRIEF_PODIUM.meta.issue_rx, so this reuses that instead of a second, possibly-disagreeing
+// definition of what counts as "about" an issue.
+function issueQuoteRx(key){
+  const r=(BRIEF_PODIUM && BRIEF_PODIUM.meta && BRIEF_PODIUM.meta.issue_rx || {})[key];
+  if(!r) return null;
+  try{ return Array.isArray(r) ? new RegExp(r[0], r[1]) : new RegExp(r,"i"); }catch(e){ return null; }
+}
 function issuePanel(key){
   ISSUE_ON=key;
   $("#issueMap").querySelectorAll(".ibub").forEach(b=>b.classList.toggle("on",b.dataset.i===key));
   const list=(issueIndex().get(key)||[]).slice().sort((a,b)=>(b.score||0)-(a.score||0));
   const c=stanceSplit(list);
   const band=b=>list.filter(n=>((fx(n.id).stance||{}).band||"none")===b);
+  // Was "the first quote this person has on ANY topic" — so an AI-issue page could surface a
+  // Taiwan quote just because it happened to be listed first in their profile (Jamie, 2026-09-13:
+  // "the quotes ... are not about the issue itself ... this is confusing"). Filtered to quotes
+  // whose own text actually matches THIS issue's regex; a person with none shown here just gets
+  // listed with no quote, which is the honest outcome, not a wrong one substituted for it.
+  const rx=issueQuoteRx(key);
+  const quotesFor=n=>((PROFILES[n.id]||{}).stated_positions||[]).filter(x=>x.quote && (!rx || rx.test(x.quote)));
   const groupHtml=(lab,b,cls)=>{
     const g=band(b); if(!g.length) return "";
     return `<div style="margin-top:14px"><div class="k" style="text-transform:uppercase;letter-spacing:.09em;
       font-size:11.5px;color:var(--muted)">${esc(lab)} — ${g.length}</div>`+
       g.slice(0,8).map(n=>{
-        const q=((PROFILES[n.id]||{}).stated_positions||[]).find(x=>x.quote);
+        const qs=quotesFor(n);
         return `<div class="qrow ${cls}">
-          ${q?`<q${q.quote_lang==="zh"?' lang="zh"':''}>${esc(q.quote.slice(0,240))}${q.quote.length>240?"…":""}</q>`:""}
+          ${qs.map(q=>`<q${q.quote_lang==="zh"?' lang="zh"':''}>${esc(q.quote.slice(0,240))}${q.quote.length>240?"…":""}</q>`).join("")}
           <div class="who"><a href="#/p/${esc(n.id)}" onclick="detail('${esc(n.id)}');return false">${esc(n.en)}</a>
             ${n.zh?`<span lang="zh">${esc(n.zh)}</span>`:""} · ${esc((fx(n.id).stance||{}).detail||"")}</div></div>`;
       }).join("")+(g.length>8?`<div class="note">+ ${g.length-8} more</div>`:"")+`</div>`;
@@ -3239,7 +3292,7 @@ function drawMap(){
     const fill=c.n==="China"?"rgba(47,125,125,.42)":(c.n_ever?`rgba(47,125,125,${t.toFixed(2)})`:"var(--shade)");
     return `<path d="${c.d}" data-hi="${c.dhi||""}" fill="${fill}" data-k="${k}"/>`;}).join("");
   const dots=MG.countries.filter(c=>c.cur.length&&c.n!=="China").map(c=>
-    `<circle class="dot" cx="${c.cx}" cy="${c.cy}" r="${(2.2+1.6*Math.sqrt(c.cur.length)).toFixed(1)}"/>`).join("");
+    `<circle class="dot" cx="${c.cx}" cy="${c.cy}" r="${(2.2+1.6*Math.sqrt(c.cur.length)).toFixed(1)}" data-r="${(2.2+1.6*Math.sqrt(c.cur.length)).toFixed(1)}"/>`).join("");
   const cn=MG.countries.find(c=>c.n==="China");
   const hqMark=(cn&&HQ.length)?`<circle cx="${cn.cx}" cy="${cn.cy}" r="11" fill="none" stroke="var(--accent)" stroke-width="2.5" style="pointer-events:none"/>
     <text x="${(+cn.cx+15).toFixed(0)}" y="${(+cn.cy+4).toFixed(0)}" font-weight="600" style="pointer-events:none">${HQ.length} based here</text>`:"";
@@ -3259,7 +3312,7 @@ function drawMap(){
     // (shown only while zoomed) restores the whole world. Skipped entirely if the click is
     // really the release-end of a drag (wireMapPanZoom's own pan), so panning never also
     // reopens whatever country the pointer happened to land on.
-    p.onclick=e=>{ if(worldPZ.wasDragged()) return; zoomToCountry("#worldsvg", p); c.n==="China"?hqPanel(e):countryPanel(c,e); };
+    p.onclick=e=>{ if(worldPZ.wasDragged()) return; mapSelect($("#worldsvg"), null, p); zoomToCountry("#worldsvg", p); c.n==="China"?hqPanel(e):countryPanel(c,e); };
   });
 }
 function zoomToCountry(svgSel, pathEl){
