@@ -1130,6 +1130,32 @@ const TIER_LABEL = {
 };
 const LAYER = {researched:"Full profile", roster:"Roster", map:"Map", pla:"PLA (military)"};
 const LAYER_COL = {researched:"#b2503a", roster:"#2f7d7d", map:"#4e7a8a"};
+// ---- Networks tab: colour nodes by organisation/role, not by how deeply researched they are ----
+// Jamie, 2026-09-13: "colour the circles by their organisation/role (i.e. MFA, Ambassador,
+// Military, Academic etc)". LAYER_COL (above) answers a different question — how much of this
+// atlas's OWN research has reached a given person — and stays exactly as it was for the People
+// tab's tier chips and every tie-list pip; only the two actual network-GRAPH renderers (the full
+// overview and a person's own ego network) switch to this. Reuses the org classifier already
+// built for the People tab's Org tree (orgTexts/orgBucket) rather than a second, separate
+// definition of what counts as MFA/IDCPC/MOFCOM/etc — MND and PLA fold into one "Military" bucket
+// here, matching Jamie's own naming, even though the Org tree keeps them institutionally
+// separate for a different purpose. Track Two people never appear in this graph (a wholly
+// separate node set — see the Track Two tab's own diagram instead), so "Academic" never actually
+// fires here; the category exists in NET_ROLE_LABEL only so the two role systems read the same
+// way if that ever changes.
+function netRoleOf(n){
+  const texts=orgTexts(n);
+  const b=orgBucket(n, texts);
+  if(b==="MND"||b==="PLA") return "MIL";
+  if(b==="MFA" && looksLikeAmbassador(texts.join(" "))) return "AMB";
+  return b;
+}
+const NET_ROLE_COL = {AMB:"#b3341a", MFA:"#2f7d7d", IDCPC:"#8a6fb0", MOFCOM:"#c9a961",
+  MIL:"#4e7a8a", TAO:"#b2503a", CIDCA:"#5c8a3a", CCP:"#171614", PROV:"#a8845c",
+  ACADEMIC:"#c9862a", OTHER:"#918c81"};
+const NET_ROLE_LABEL = {AMB:"Ambassador", MFA:"MFA (other)", IDCPC:"CPC Int'l Dept", MOFCOM:"MOFCOM",
+  MIL:"Military", TAO:"Taiwan Affairs Office", CIDCA:"CIDCA", CCP:"Party & state leadership",
+  PROV:"Provincial", ACADEMIC:"Academic (Track Two)", OTHER:"Other / unclear"};
 const CC_LABEL = {PSC:"Politburo Standing Committee", Politburo:"Politburo", Full:"Central Committee", Alternate:"CC alternate"};
 const S = {q:"", tiers:new Set(), jobs:new Set(), cc:new Set(),
   region:new Set(), issue:new Set(), org:new Set(), age:new Set(), edu:new Set(), major:new Set(), sort:"score", cur:false, limit:120, view:"tier"};
@@ -3529,9 +3555,14 @@ function netHoverMoveBind(wrap){
   wrap.onmouseleave=()=>{ wrap._nhCurrent=null; netHoverEl().hidden=true; };
 }
 function netLegend(){
+  // Node colour = organisation/role (netRoleOf, above), only for the roles actually present in
+  // this graph's own node set — a legend key for "Academic" would be dead weight everywhere
+  // that role never appears, since Track Two people are never nodes in this particular graph.
+  const present=new Set(MN.filter((n,i)=>(ADJ.get(i)||[]).length>0).map(n=>netRoleOf(n)));
+  const roleKeys=Object.keys(NET_ROLE_COL).filter(k=>present.has(k));
   $("#netlegend").innerHTML=Object.entries(EDGE_STYLE).map(([k,[c,d]])=>
     `<span><s style="border-color:${c};${d?"border-top-style:dashed":""}"></s>${k.replace("_"," ")}</span>`).join("")+
-    Object.entries(LAYER_COL).map(([k,c])=>`<span><i style="background:${c}"></i>${LAYER[k]}</span>`).join("")+
+    roleKeys.map(k=>`<span><i style="background:${NET_ROLE_COL[k]}"></i>${esc(NET_ROLE_LABEL[k])}</span>`).join("")+
     `<span><i style="background:transparent;border:1px solid var(--muted)"></i>foreign counterpart</span>`;
 }
 /* ---------- ties landing: most-connected people + schools ---------- */
@@ -4388,7 +4419,7 @@ function drawNetAll(){
   });
   const Nn=arr.map(id=>{const n=MN[id],p=pos.get(id),tr=tierOf(id);
     const r=Math.max(2.8,10.5-1.05*(tr-1));
-    return `<circle data-nh="person" data-i="${id}" cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="${r.toFixed(1)}" fill="${LAYER_COL[n.tier]||"var(--muted)"}" fill-opacity="0.9" stroke="${PROMO.has(n.id)?"var(--rust)":"var(--card)"}" stroke-width="${PROMO.has(n.id)?2:0.8}" style="cursor:pointer" onclick="netFor(${id})"/>`
+    return `<circle data-nh="person" data-i="${id}" cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="${r.toFixed(1)}" fill="${NET_ROLE_COL[netRoleOf(n)]||"var(--muted)"}" fill-opacity="0.9" stroke="${PROMO.has(n.id)?"var(--rust)":"var(--card)"}" stroke-width="${PROMO.has(n.id)?2:0.8}" style="cursor:pointer" onclick="netFor(${id})"/>`
       + (labelled.has(id)?`<text x="${(p.x+r+3).toFixed(0)}" y="${(p.y+3).toFixed(0)}" ${tr<=2?'font-weight="600"':""} opacity="${tr<=3?0.95:0.75}" style="pointer-events:none">${esc(n.en)}</text>`:"");}).join("");
   $("#netAllWrap").innerHTML=`<svg viewBox="0 0 ${W} ${H}">${L}${Nn}</svg>
     <div class="note" style="padding:6px 4px 2px">${arr.length} people, ${links.length} ties drawn — the highest-ranked people
@@ -4444,7 +4475,7 @@ function netFor(i){
     // Clicking RE-CENTRES the network on that person instead of leaving it for their full
     // profile — the profile is one link away in the card above the graph now, and staying
     // inside the graph is what makes "click through a chain of ties" possible at all.
-    return `<circle data-nh="person" data-i="${n.id}" cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="${r}" fill="${LAYER_COL[m.tier]}" fill-opacity="${n.far?0.55:1}" stroke="${PROMO.has(m.id)?"var(--rust)":"var(--card)"}" stroke-width="${PROMO.has(m.id)?2:1}" style="cursor:pointer" onclick="netFor(${n.id})"/>
+    return `<circle data-nh="person" data-i="${n.id}" cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="${r}" fill="${NET_ROLE_COL[netRoleOf(m)]||"var(--muted)"}" fill-opacity="${n.far?0.55:1}" stroke="${PROMO.has(m.id)?"var(--rust)":"var(--card)"}" stroke-width="${PROMO.has(m.id)?2:1}" style="cursor:pointer" onclick="netFor(${n.id})"/>
       ${n.far?"":`<text x="${(p.x+r+3).toFixed(0)}" y="${(p.y+3).toFixed(0)}" ${n.center?'font-weight="600"':""} style="pointer-events:none">${esc(m.en)}</text>`}`;}).join("");
   const cm=MN[i], cf=fx(i);
   $("#netwrap").innerHTML=`<div class="netcenter">${nodeThumb(cm,1)}
