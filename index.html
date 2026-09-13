@@ -1116,9 +1116,23 @@ button.vt:hover{transform:translateY(-1px);border-color:currentColor}
     <div class="controls">
       <input type="search" id="t2Q" placeholder="Search Track Two by name or institution…">
       <div class="chips" id="t2Chips"></div>
+      <div class="segctl" id="t2Viewmode" style="margin-left:auto">
+        <button data-v="grid" class="on">Cards</button><button data-v="net">Network</button><button data-v="map">Map</button>
+      </div>
     </div>
     <div class="count" id="t2Count"></div>
     <div class="bgrid" id="t2Grid"></div>
+    <div id="t2NetWrap" hidden>
+      <p class="note">Ties are a shared institution (solid) or a tie their own profile names
+        (dashed) — click anyone for their details, colleagues and issue areas without leaving the diagram.</p>
+      <div class="netwrap" id="t2NetSvgWrap"></div>
+    </div>
+    <div id="t2MapWrap" hidden>
+      <p class="note">Where each person is based, from their current institution — dot size is how many
+        people are there. Click a city.</p>
+      <div class="mapwrap" id="t2MapSvgWrap" style="max-width:640px;margin:0 auto"></div>
+    </div>
+    <div id="t2Drop"></div>
   </div>
   </main>
  </div>
@@ -4370,6 +4384,30 @@ function t2Src(c){
   const conf = c.confidence ? ` · ${esc(c.confidence)} confidence` : "";
   return ` <sup><a href="${esc(c.source_url)}" target="_blank" rel="noopener" title="${esc(c.source_title||"")}${conf}">source</a></sup>`;
 }
+// ---- Track Two: colleagues at the same institution, and the issues THEY work on ----
+// Jamie, 2026-09-13: "show a list of some of the people who work with them in their organisation
+// & the issues they work on. E.g. academics in Wang Jisi's department/centre in PKU." No field
+// names a sub-department fine enough to isolate a "centre" from a "university" (this is Track
+// Two's own free-text `current_posts[].institution`, not the government roster's researched
+// department strings) — matched at the INSTITUTION level (exact string), which real overlaps
+// already exist at: Tsinghua (5 people), Peking University (4), Renmin (3), CCG/CASfAS/Fudan/
+// CPIFA/CIIS (2 each) — checked against the actual data before building this, not assumed.
+let T2_INST_INDEX=null;
+function t2ColleaguesOf(p){
+  if(!T2_INST_INDEX){
+    T2_INST_INDEX=new Map();
+    TRACK_TWO.forEach(person=>{
+      new Set((person.current_posts||[]).map(c=>c.institution).filter(Boolean))
+        .forEach(i=>{ (T2_INST_INDEX.get(i)||T2_INST_INDEX.set(i,[]).get(i)).push(person); });
+    });
+  }
+  const myInsts=new Set((p.current_posts||[]).map(c=>c.institution).filter(Boolean));
+  const out=new Map();
+  myInsts.forEach(i=>(T2_INST_INDEX.get(i)||[]).forEach(other=>{
+    if(other.person_id!==p.person_id && !out.has(other.person_id)) out.set(other.person_id,{person:other,sharedInst:i});
+  }));
+  return [...out.values()];
+}
 function t2Card(p){
   const c0 = (p.current_posts||[])[0];
   const inst = (c0&&c0.institution) || "";
@@ -4386,6 +4424,8 @@ function t2Card(p){
         ${p.atlas_person_id?'<span class="f">also in government roster</span>':""}
         ${p.caveat?'<span class="f hawk">flagged</span>':""}
       </div>
+      ${(()=>{ const c=t2ColleaguesOf(p); return c.length?`<div class="note" style="margin-top:5px">
+        + ${c.length} colleague${c.length>1?"s":""} at ${esc(c[0].sharedInst)}</div>`:""; })()}
     </div>
   </div>`;
 }
@@ -4410,6 +4450,131 @@ function renderT2(){
     `<p class="note">${TRACK_TWO.length?"No one matches that search.":"Not built yet — run script 24."}</p>`;
 }
 $("#t2Q").addEventListener("input", e=>{ T2_FILTER.q=e.target.value; renderT2(); });
+/* ---------- Track Two: visualise it, not just list it (2026-09-13) ----------
+   Jamie: "a map/diagram that allows us to click on them and drop down their details and show
+   their affiliations and links to the rest of the dataset" — both a network diagram (shared
+   institution + any tie their own research names) and a China city map (from their current
+   institution), matching the "both" choice. Clicking anyone in either drops their detail into
+   #t2Drop IN PLACE, the same "stay in the diagram, drill through it" pattern the main Networks
+   tab already uses for its own ego-network view, rather than leaving the page. */
+let T2_VIEW="grid";
+document.querySelectorAll("#t2Viewmode button").forEach(b=>b.onclick=()=>{
+  T2_VIEW=b.dataset.v;
+  document.querySelectorAll("#t2Viewmode button").forEach(x=>x.classList.toggle("on",x===b));
+  $("#t2Grid").hidden=T2_VIEW!=="grid"; $("#t2Count").hidden=T2_VIEW!=="grid";
+  $("#t2NetWrap").hidden=T2_VIEW!=="net"; $("#t2MapWrap").hidden=T2_VIEW!=="map";
+  $("#t2Drop").innerHTML="";
+  if(T2_VIEW==="net") t2DrawNetwork();
+  if(T2_VIEW==="map") t2DrawMap();
+});
+function t2BuildEdges(){
+  const idx=new Map(TRACK_TWO.map((p,i)=>[p.person_id,i]));
+  const edges=[], seen=new Set();
+  const add=(a,b,ty)=>{ if(a===b) return; const k=[a,b].sort().join(":")+":"+ty; if(seen.has(k)) return;
+    seen.add(k); edges.push({a:idx.get(a),b:idx.get(b),ty}); };
+  TRACK_TWO.forEach(p=>{
+    t2ColleaguesOf(p).forEach(({person:o})=>add(p.person_id,o.person_id,"inst"));
+    (p.network||[]).forEach(n=>{
+      const other=TRACK_TWO.find(t=>t.name_en.value===n.name);
+      if(other) add(p.person_id,other.person_id,"tie");
+    });
+  });
+  return edges;
+}
+function t2DrawNetwork(){
+  const N=TRACK_TWO.length, W=760, H=500;
+  const edges=t2BuildEdges();
+  const pos=TRACK_TWO.map((p,i)=>{ const a=2*Math.PI*i/N; return {x:W/2+220*Math.cos(a), y:H/2+150*Math.sin(a)}; });
+  for(let it=0; it<240; it++){
+    const f=pos.map(()=>({x:0,y:0}));
+    for(let a=0;a<N;a++)for(let b=a+1;b<N;b++){
+      let dx=pos[a].x-pos[b].x, dy=pos[a].y-pos[b].y; const d2=dx*dx+dy*dy+0.01;
+      const rep=1800/d2, d=Math.sqrt(d2); dx/=d; dy/=d;
+      f[a].x+=dx*rep; f[a].y+=dy*rep; f[b].x-=dx*rep; f[b].y-=dy*rep;
+    }
+    edges.forEach(e=>{
+      const dx=pos[e.b].x-pos[e.a].x, dy=pos[e.b].y-pos[e.a].y, d=Math.sqrt(dx*dx+dy*dy)+.01;
+      const k=0.02*(d-110); f[e.a].x+=dx/d*k; f[e.a].y+=dy/d*k; f[e.b].x-=dx/d*k; f[e.b].y-=dy/d*k;
+    });
+    pos.forEach((p,i)=>{ const g=f[i];
+      p.x=Math.max(16,Math.min(W-16,p.x+(g.x+(W/2-p.x)*0.006)*0.85));
+      p.y=Math.max(14,Math.min(H-14,p.y+(g.y+(H/2-p.y)*0.006)*0.85)); });
+  }
+  const L=edges.map(e=>{ const A=pos[e.a],B=pos[e.b];
+    return `<line x1="${A.x.toFixed(0)}" y1="${A.y.toFixed(0)}" x2="${B.x.toFixed(0)}" y2="${B.y.toFixed(0)}"
+      stroke="var(--muted)" stroke-width="1.1" stroke-opacity="0.4"${e.ty==="tie"?' stroke-dasharray="3,3"':""}/>`;}).join("");
+  const Nn=TRACK_TWO.map((p,i)=>{
+    const col=p.sphere==="think_tank"?"#8a6fb0":"#2f7d7d";
+    const r=6+Math.min(6,t2ColleaguesOf(p).length);
+    return `<circle data-i="${i}" cx="${pos[i].x.toFixed(0)}" cy="${pos[i].y.toFixed(0)}" r="${r}" fill="${col}"
+      fill-opacity="0.88" stroke="var(--card)" stroke-width="1" style="cursor:pointer"/>
+      <text x="${(pos[i].x+r+3).toFixed(0)}" y="${(pos[i].y+3).toFixed(0)}" font-size="10" style="pointer-events:none">${esc(p.name_en.value)}</text>`;
+  }).join("");
+  $("#t2NetSvgWrap").innerHTML=`<svg viewBox="0 0 ${W} ${H}">${L}${Nn}</svg>`;
+  $("#t2NetSvgWrap").querySelectorAll("circle").forEach(c=>c.onclick=()=>t2Drop(TRACK_TWO[+c.dataset.i].person_id));
+}
+// Institution -> city, matched on the atlas's own current_posts text — checked against the real
+// 25-person dataset before writing this (Beijing carries nearly everyone: Tsinghua/PKU/Renmin/
+// CASS/CIIS/CPIFA/CCG and every national association are all Beijing-based). A person whose
+// institution never matches (posted overseas, or a name this map can't resolve) is left off the
+// MAP but still appears in the network diagram and the card grid — never silently dropped
+// altogether, just not placeable on THIS particular view.
+const T2_CITY_COORD={Beijing:[442.8,144.4], Shanghai:[493.7,231.8], Nanjing:[466.8,223.4], Chengdu:[316.8,236.4], Suzhou:[485.0,231.0]};
+const T2_CITY_RULES=[
+  [/Nanjing University/i,"Nanjing"], [/Fudan University|Shanghai Institutes for International Studies|Shanghai Municipal/i,"Shanghai"],
+  [/Soochow University/i,"Suzhou"], [/Sichuan University/i,"Chengdu"],
+  [/Tsinghua|Peking University|Renmin University|Center for China and Globalization|\bCCG\b|Chinese Association for American Studies|Chinese People's Institute of Foreign Affairs|\bCPIFA\b|China Institute of International Studies\b|\bCIIS\b|China Institute for Innovation and Development Strategy|\bCIIDS\b|China Foreign Affairs University|Ministry of Foreign Affairs|CSCAP China National Committee|State Council|Chinese Association of American Studies|Chinese Association for Middle East Studies|Ministry of State Security|Chinese Academy of Social Sciences|\bCASS\b|Counsellors. Office|Chinese Association of International Studies|Charhar Institute|China Energy Security Institute|World Peace Forum|Institute of International and Strategic Studies/i,"Beijing"],
+];
+function t2CityOf(p){
+  for(const t of (p.current_posts||[]).map(c=>c.institution).filter(Boolean))
+    for(const [rx,city] of T2_CITY_RULES) if(rx.test(t)) return city;
+  return null;
+}
+function t2DrawMap(){
+  const byCity=new Map();
+  TRACK_TWO.forEach(p=>{ const c=t2CityOf(p); if(c) (byCity.get(c)||byCity.set(c,[]).get(c)).push(p); });
+  const cmx=Math.max(1,...[...byCity.values()].map(v=>v.length),1);
+  const paths=MC.provinces.map(p=>`<path d="${p.d}" fill="var(--shade)"/>`).join("");
+  const dots=[...byCity.entries()].map(([city,ppl])=>{
+    const [cx,cy]=T2_CITY_COORD[city]||[0,0];
+    return `<circle class="cdot" cx="${cx}" cy="${cy}" r="${(4+4*Math.sqrt(ppl.length/cmx)).toFixed(1)}"
+      data-city="${esc(city)}"><title>${esc(city)}: ${ppl.length}</title></circle>
+      <text class="clab" x="${(cx+7).toFixed(0)}" y="${(cy-5).toFixed(0)}">${esc(city)}</text>`;
+  }).join("");
+  $("#t2MapSvgWrap").innerHTML=`<svg viewBox="0 0 ${MC.W} ${MC.H}">${paths}${dots}</svg>`;
+  $("#t2MapSvgWrap").querySelectorAll("circle.cdot").forEach(el=>el.onclick=()=>t2CityPanel(el.dataset.city,byCity));
+  const unplaced=TRACK_TWO.length-[...byCity.values()].reduce((s,v)=>s+v.length,0);
+  const note=$("#t2MapWrap .note");
+  if(unplaced && note) note.textContent+=` ${unplaced} not shown here — based overseas, or an institution this map can't place.`;
+}
+function t2CityPanel(city, byCity){
+  const ppl=byCity.get(city)||[];
+  $("#t2Drop").innerHTML=`<h3 style="margin-top:14px">${esc(city)} <span class="note">${ppl.length}</span></h3>
+    <div class="minigrid">${ppl.map(p=>{ const c0=(p.current_posts||[])[0];
+      const initials=(p.name_en.value||"?").split(" ").filter(w=>w[0]===w[0].toUpperCase()).map(w=>w[0]).slice(0,2).join("");
+      return `<button class="minicard" onclick="t2Drop('${esc(p.person_id)}')"><span class="mph">${esc(initials)}</span>
+        <span class="mtxt"><span class="mn">${t2Val(p.name_en)}</span><span class="mp">${c0?t2Val(c0):""}</span></span></button>`;
+    }).join("")}</div>`;
+  $("#t2Drop").scrollIntoView({block:"nearest",behavior:"smooth"});
+}
+// The inline "drop down their details" card — deliberately NOT a navigation to t2Detail, so
+// clicking around the diagram (or a city's people list) never loses the diagram itself.
+function t2Drop(id){
+  const p=T2_BY.get(id); if(!p) return;
+  const c0=(p.current_posts||[])[0];
+  const issues=((p.portfolio&&p.portfolio.issues)||[]).map(i=>`<span class="tag iss">${esc(i)}</span>`).join("");
+  const cols=t2ColleaguesOf(p);
+  $("#t2Drop").innerHTML=`<div class="glance" style="margin-top:14px">
+    <div class="grow"><div class="gk">${esc(T2_SPHERE_LABEL[p.sphere]||p.sphere)}</div>
+      <div style="font:600 17px Georgia,serif">${t2Val(p.name_en)} <span class="zh" lang="zh">${t2Val(p.name_zh)}</span></div>
+      <div class="note">${c0?t2Val(c0):""}</div></div>
+    ${issues?`<div class="grow"><div class="gk">Issues</div><div class="tagset">${issues}</div></div>`:""}
+    ${cols.length?`<div class="grow"><div class="gk">Colleagues here (${cols.length})</div>
+      <div class="note">${cols.slice(0,6).map(c=>esc(c.person.name_en.value)).join(", ")}${cols.length>6?", …":""}</div></div>`:""}
+    <button class="prbtn" onclick="t2Detail('${esc(p.person_id)}')">Full profile →</button>
+  </div>`;
+  $("#t2Drop").scrollIntoView({block:"nearest",behavior:"smooth"});
+}
 function t2Field(k,v){ return v ? `<div class="field"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>` : ""; }
 function t2Detail(id){
   const p = T2_BY.get(id);
@@ -4430,6 +4595,18 @@ function t2Detail(id){
       : `<b>${esc(n.name)}</b>`;
     return `<li>${nameHtml} — ${esc(n.relationship||"")}${t2Src(n)}</li>`;
   }).join("");
+  // Colleagues are grouped by WHICH shared institution puts them there, and each carries their
+  // OWN issue tags — "who else works here, and on what" is the actual question this answers, not
+  // just "who else is Track Two".
+  const colleagues=(()=>{
+    const byInst=new Map();
+    t2ColleaguesOf(p).forEach(({person:o,sharedInst})=>(byInst.get(sharedInst)||byInst.set(sharedInst,[]).get(sharedInst)).push(o));
+    return [...byInst.entries()].map(([inst,people])=>`<div class="field"><div class="k">${esc(inst)}</div>
+      <ul class="blinks">${people.map(o=>{
+        const oIssues=((o.portfolio&&o.portfolio.issues)||[]).slice(0,3).join(", ");
+        return `<li><a href="#" onclick="t2Detail('${esc(o.person_id)}');return false">${t2Val(o.name_en)}</a>${oIssues?` — <span class="note">${esc(oIssues)}</span>`:""}</li>`;
+      }).join("")}</ul></div>`).join("");
+  })();
   const issues = ((p.portfolio&&p.portfolio.issues)||[]).map(i=>`<span class="tag iss">${esc(i)}</span>`).join("");
   const countries = ((p.portfolio&&p.portfolio.countries)||[]).map(i=>`<span class="tag">${esc(i)}</span>`).join("");
   const crossLink = p.atlas_person_id ? `<div class="callout good"><b>Also in the government roster.</b>
@@ -4460,6 +4637,8 @@ function t2Detail(id){
         ${engagement?`<h3>Track Two engagement</h3><ul class="blinks">${engagement}</ul>`:""}
         ${trackRecord?`<h3>Track record</h3><ul class="blinks">${trackRecord}</ul>`:""}
         ${network?`<h3>Network</h3><ul class="blinks">${network}</ul>`:""}
+        ${colleagues?`<h3>Colleagues in this atlas</h3><p class="note">Other Track Two people who share an
+          institution with them, and what THEY work on.</p>${colleagues}`:""}
       </div>
     </div>
     ${quotes?`<h3>Stated positions</h3>${quotes}`:""}
