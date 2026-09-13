@@ -4635,20 +4635,53 @@ const T2_CITY_RULES=[
   [/Soochow University/i,"Suzhou"], [/Sichuan University/i,"Chengdu"],
   [/Tsinghua|Peking University|Renmin University|Center for China and Globalization|\bCCG\b|Chinese Association for American Studies|Chinese People's Institute of Foreign Affairs|\bCPIFA\b|China Institute of International Studies\b|\bCIIS\b|China Institute for Innovation and Development Strategy|\bCIIDS\b|China Foreign Affairs University|Ministry of Foreign Affairs|CSCAP China National Committee|State Council|Chinese Association of American Studies|Chinese Association for Middle East Studies|Ministry of State Security|Chinese Academy of Social Sciences|\bCASS\b|Counsellors. Office|Chinese Association of International Studies|Charhar Institute|China Energy Security Institute|World Peace Forum|Institute of International and Strategic Studies/i,"Beijing"],
 ];
-function t2CityOf(p){
+// Canonical institution label for the city breakdown below — Beijing alone carries most of the
+// 25-person roster across ~15 distinct institutions (PKU, Tsinghua, Renmin, CASS, CIIS, CPIFA,
+// CCG, MFA, …), several of which appear in the raw text with more than one spelling/acronym
+// (e.g. "CASS" vs "Chinese Academy of Social Sciences (CASS)" vs "UCASS"). Matched against
+// the SAME institution text that placed the person in the city in the first place (t2CityMatch),
+// so the grouping is never inconsistent with why someone appears in that city at all. Anything
+// that doesn't match a rule falls back to its own raw text rather than being merged or dropped.
+const T2_INST_LABEL_RULES=[
+  [/Peking University/i,"Peking University"],
+  [/Tsinghua/i,"Tsinghua University"],
+  [/Renmin University/i,"Renmin University of China"],
+  [/Chinese Academy of Social Sciences|\bCASS\b|UCASS/i,"Chinese Academy of Social Sciences (CASS)"],
+  [/China Institute of International Studies|\bCIIS\b/i,"China Institute of International Studies (CIIS)"],
+  [/Chinese People's Institute of Foreign Affairs|\bCPIFA\b/i,"Chinese People's Institute of Foreign Affairs (CPIFA)"],
+  [/Center for China and Globalization|\bCCG\b/i,"Center for China and Globalization (CCG)"],
+  [/China Foreign Affairs University/i,"China Foreign Affairs University"],
+  [/Fudan University/i,"Fudan University"],
+  [/Nanjing University/i,"Nanjing University"],
+  [/Shanghai Institutes for International Studies|\bSIIS\b/i,"Shanghai Institutes for International Studies (SIIS)"],
+  [/Soochow University/i,"Soochow University"],
+  [/Sichuan University/i,"Sichuan University"],
+  [/Ministry of Foreign Affairs/i,"Ministry of Foreign Affairs"],
+  [/Ministry of State Security/i,"Ministry of State Security"],
+  [/State Council/i,"State Council"],
+  [/China Institute for Innovation and Development Strategy|\bCIIDS\b/i,"China Institute for Innovation and Development Strategy"],
+  [/Charhar Institute/i,"Charhar Institute"],
+  [/Ningxia University/i,"Ningxia University"],
+];
+function t2InstLabel(text){
+  for(const [rx,label] of T2_INST_LABEL_RULES) if(rx.test(text)) return label;
+  return text;
+}
+function t2CityMatch(p){
   for(const t of (p.current_posts||[]).map(c=>c.institution).filter(Boolean))
-    for(const [rx,city] of T2_CITY_RULES) if(rx.test(t)) return city;
+    for(const [rx,city] of T2_CITY_RULES) if(rx.test(t)) return {city,inst:t};
   return null;
 }
+function t2CityOf(p){ const m=t2CityMatch(p); return m?m.city:null; }
 function t2DrawMap(){
   const byCity=new Map();
-  TRACK_TWO.forEach(p=>{ const c=t2CityOf(p); if(c) (byCity.get(c)||byCity.set(c,[]).get(c)).push(p); });
+  TRACK_TWO.forEach(p=>{ const m=t2CityMatch(p); if(m) (byCity.get(m.city)||byCity.set(m.city,[]).get(m.city)).push({p,inst:m.inst}); });
   const cmx=Math.max(1,...[...byCity.values()].map(v=>v.length),1);
   const paths=MC.provinces.map(p=>`<path d="${p.d}" fill="var(--shade)"/>`).join("");
-  const dots=[...byCity.entries()].map(([city,ppl])=>{
+  const dots=[...byCity.entries()].map(([city,rows])=>{
     const [cx,cy]=T2_CITY_COORD[city]||[0,0];
-    return `<circle class="cdot" cx="${cx}" cy="${cy}" r="${(4+4*Math.sqrt(ppl.length/cmx)).toFixed(1)}"
-      data-city="${esc(city)}"><title>${esc(city)}: ${ppl.length}</title></circle>
+    return `<circle class="cdot" cx="${cx}" cy="${cy}" r="${(4+4*Math.sqrt(rows.length/cmx)).toFixed(1)}"
+      data-city="${esc(city)}"><title>${esc(city)}: ${rows.length}</title></circle>
       <text class="clab" x="${(cx+7).toFixed(0)}" y="${(cy-5).toFixed(0)}">${esc(city)}</text>`;
   }).join("");
   $("#t2MapSvgWrap").innerHTML=`<svg viewBox="0 0 ${MC.W} ${MC.H}">${paths}${dots}</svg>`;
@@ -4657,14 +4690,23 @@ function t2DrawMap(){
   const note=$("#t2MapWrap .note");
   if(unplaced && note) note.textContent+=` ${unplaced} not shown here — based overseas, or an institution this map can't place.`;
 }
+// A city panel with several institutions (Beijing) reads as a flat wall of 20+ names unless it's
+// broken down by WHERE each person works there — the same "just list them" problem this pass
+// already fixed for the org tree and for issue-panel people lists. Grouped by t2InstLabel, largest
+// institution first; a one-institution city (Shanghai, Nanjing, Chengdu, Suzhou) just renders one
+// group, so this doesn't add a step for the cities that don't need it.
 function t2CityPanel(city, byCity){
-  const ppl=byCity.get(city)||[];
-  $("#t2Drop").innerHTML=`<h3 style="margin-top:14px">${esc(city)} <span class="note">${ppl.length}</span></h3>
-    <div class="minigrid">${ppl.map(p=>{ const c0=(p.current_posts||[])[0];
-      const initials=(p.name_en.value||"?").split(" ").filter(w=>w[0]===w[0].toUpperCase()).map(w=>w[0]).slice(0,2).join("");
-      return `<button class="minicard" onclick="t2Drop('${esc(p.person_id)}')"><span class="mph">${esc(initials)}</span>
-        <span class="mtxt"><span class="mn">${t2Val(p.name_en)}</span><span class="mp">${c0?t2Val(c0):""}</span></span></button>`;
-    }).join("")}</div>`;
+  const rows=byCity.get(city)||[];
+  const byInst=new Map();
+  rows.forEach(({p,inst})=>{ const label=t2InstLabel(inst); (byInst.get(label)||byInst.set(label,[]).get(label)).push(p); });
+  const groups=[...byInst.entries()].sort((a,b)=>b[1].length-a[1].length);
+  $("#t2Drop").innerHTML=`<h3 style="margin-top:14px">${esc(city)} <span class="note">${rows.length}</span></h3>
+    ${groups.map(([inst,ppl])=>`<div class="field"><div class="k">${esc(inst)} <span class="note">(${ppl.length})</span></div>
+      <div class="minigrid">${ppl.map(p=>{ const c0=(p.current_posts||[])[0];
+        const initials=(p.name_en.value||"?").split(" ").filter(w=>w[0]===w[0].toUpperCase()).map(w=>w[0]).slice(0,2).join("");
+        return `<button class="minicard" onclick="t2Drop('${esc(p.person_id)}')"><span class="mph">${esc(initials)}</span>
+          <span class="mtxt"><span class="mn">${t2Val(p.name_en)}</span><span class="mp">${c0?t2Val(c0):""}</span></span></button>`;
+      }).join("")}</div></div>`).join("")}`;
   $("#t2Drop").scrollIntoView({block:"nearest",behavior:"smooth"});
 }
 // The inline "drop down their details" card — deliberately NOT a navigation to t2Detail, so
