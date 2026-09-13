@@ -837,6 +837,7 @@ button.vt:hover{transform:translateY(-1px);border-color:currentColor}
     <button class="navitem tab on" role="tab" aria-selected="true"  data-tab="people">People <span class="n" id="railPeople"></span></button>
     <button class="navitem tab"    role="tab" aria-selected="false" data-tab="map">Postings <span class="n" id="railCountries"></span></button>
     <button class="navitem tab"    role="tab" aria-selected="false" data-tab="issues">Issues <span class="n" id="railIssues"></span></button>
+    <button class="navitem tab"    role="tab" aria-selected="false" data-tab="words">In their words <span class="n" id="railWords"></span></button>
     <button class="navitem tab"    role="tab" aria-selected="false" data-tab="origins">Origins</button>
     <button class="navitem tab"    role="tab" aria-selected="false" data-tab="net">Networks <span class="n" id="railTies"></span></button>
     <button class="navitem tab"    role="tab" aria-selected="false" data-tab="queue">Next rung <span class="n" id="qcount"></span></button>
@@ -977,22 +978,35 @@ button.vt:hover{transform:translateY(-1px);border-color:currentColor}
   <div class="panel" id="tab-issues" role="tabpanel" aria-label="Issues">
     <p class="note">The issues these officials are documented as working on, grouped into a
       controlled vocabulary from the free text of each researched profile. Click an issue to see who
-      carries it and what they have actually said about it.</p>
+      carries it and what they have actually said about it — or search for an issue OR a country
+      below (a country isn't one of the controlled categories, but the MFA podium and embassy
+      corpus both cover it directly).</p>
+    <div class="controls" style="margin:10px 0">
+      <div class="pick" style="position:relative;flex:1;min-width:220px">
+        <input type="search" id="issueSearch" placeholder="Search an issue or a country…" autocomplete="off">
+        <div class="picklist" id="issuePicklist"></div>
+      </div>
+    </div>
     <div id="issueMap"></div>
-    <div class="cpanel" id="issuePanel"><span class="note">Select an issue above.</span></div>
+    <div class="cpanel" id="issuePanel"><span class="note">Select an issue above, or search for an issue or a country.</span></div>
     <details class="method" style="margin-top:22px"><summary>method — how issues were grouped, and how stance is decided</summary>
       <div id="issueMethod"></div>
     </details>
-    <section class="bsec" style="margin-top:34px">
-      <h2 style="font-size:19px"><span id="qwallHead">In their own words</span></h2>
-      <details class="method"><summary>method</summary>
-        <p class="note">Verbatim, sourced quotations — never paraphrase — from ministry transcripts,
-          embassy statements, signed op-eds and interviews. Each carries its source and whether that
-          source still supports it. Click a quotation to open that person's brief.</p></details>
-      <div class="chips" id="qwallTopics" role="group" aria-label="Filter quotations by topic"></div>
-      <div class="qwall" id="qwallUS"></div>
-      <div id="qwallMore" class="note"></div>
-    </section>
+  </div>
+
+  <div class="panel" id="tab-words" role="tabpanel" aria-label="In their words">
+    <h2 class="bh" style="margin-bottom:4px"><span id="qwallHead">In their own words</span></h2>
+    <p class="note bdeck">Verbatim, sourced quotations — never paraphrase — from ministry
+      transcripts, embassy statements, signed op-eds and interviews, about the ISSUES themselves
+      (not about the people who said them — see the People tab for that). Each carries its source
+      and whether that source still supports it. Search or click a topic, then click a quotation
+      to open the person who said it.</p>
+    <div class="controls">
+      <input type="search" id="qwallQ" placeholder="Search quotations by word or phrase…" autocomplete="off">
+    </div>
+    <div class="chips" id="qwallTopics" role="group" aria-label="Filter quotations by topic"></div>
+    <div class="qwall" id="qwallUS"></div>
+    <div id="qwallMore" class="note"></div>
   </div>
 
   <div class="panel" id="tab-net" role="tabpanel" aria-label="Networks">
@@ -1381,7 +1395,7 @@ const QW_TOPICS=[
   ["order",  "World order",       q=>/multilateral|multipolar|global governance|international order|sovereignty|un\b|united nations|hegemonism/i.test((q.theme||"")+" "+q.quote)],
   ["region", "Neighbourhood & regions", q=>/asean|south china sea|japan|korea|india|pacific|africa|europe|eu\b|middle east|russia|ukraine/i.test((q.theme||"")+" "+q.quote)]
 ];
-let QW_ALL=[], QW_SHOWN=0, QW_TOPIC="us", QW_POOL=[];
+let QW_ALL=[], QW_SHOWN=0, QW_TOPIC="us", QW_POOL=[], QW_Q="";
 function quoteWall(){
   QW_ALL=[];
   PROFILE_IDS.forEach(id=>{
@@ -1391,6 +1405,7 @@ function quoteWall(){
       QW_ALL.push({id,q,tags});
     });
   });
+  $("#railWords").textContent = QW_ALL.length ? `(${QW_ALL.length})` : "";
   const counts=Object.fromEntries(QW_TOPICS.map(([k])=>[k,QW_ALL.filter(x=>x.tags.has(k)).length]));
   $("#qwallTopics").innerHTML = QW_TOPICS.filter(([k])=>counts[k]>0).map(([k,lab])=>
       `<button class="chip ${k===QW_TOPIC?"on":""}" data-t="${k}">${esc(lab)} <span style="opacity:.65">${counts[k]}</span></button>`
@@ -1404,6 +1419,11 @@ function quoteWall(){
 }
 function drawQuoteWall(){
   QW_POOL = QW_TOPIC==="all" ? QW_ALL.slice() : QW_ALL.filter(x=>x.tags.has(QW_TOPIC));
+  // Free-text search on top of (not instead of) the topic chips — Jamie, 2026-09-13: "give loads
+  // more here that people can click on or search for". Matches the quote text itself and who
+  // said it, so searching e.g. "Israel" finds it even though no topic chip names it specifically.
+  if(QW_Q){ const q=QW_Q.toLowerCase();
+    QW_POOL=QW_POOL.filter(x=>String(x.q.quote||"").toLowerCase().includes(q) || pname(x.id).toLowerCase().includes(q)); }
   // Verified quotations lead, and among those the substantive ones do: some sourced "quotes"
   // are three-word fragments of officialese ("in-depth, candid, constructive") which are
   // perfectly real but say nothing, and they were crowding out the passages worth reading.
@@ -1412,6 +1432,7 @@ function drawQuoteWall(){
   QW_POOL.sort((a,b)=>wt(b)-wt(a));
   $("#qwallUS").innerHTML=""; QW_SHOWN=0; moreQuotes(8);
 }
+$("#qwallQ").addEventListener("input", e=>{ QW_Q=e.target.value; drawQuoteWall(); });
 function moreQuotes(n){
   const slice=QW_POOL.slice(QW_SHOWN,QW_SHOWN+n);
   $("#qwallUS").insertAdjacentHTML("beforeend", slice.map(({id,q})=>{
@@ -1428,11 +1449,11 @@ function moreQuotes(n){
     c.onclick=go; c.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){e.preventDefault();go();} };
   });
   const lab = (QW_TOPICS.find(t=>t[0]===QW_TOPIC)||[,"every topic"])[1];
-  const on = QW_TOPIC==="all" ? "across every topic" : "on "+lab;
+  const on = (QW_TOPIC==="all" ? "across every topic" : "on "+lab) + (QW_Q?` matching “${esc(QW_Q)}”`:"");
   $("#qwallMore").innerHTML = QW_SHOWN<QW_POOL.length
-    ? `Showing ${QW_SHOWN} of ${QW_POOL.length} sourced quotations ${esc(on)}.
+    ? `Showing ${QW_SHOWN} of ${QW_POOL.length} sourced quotations ${on}.
        <a href="#" onclick="moreQuotes(10);return false">Show more</a>`
-    : `All ${QW_POOL.length} sourced quotations ${esc(on)} are shown.`;
+    : `All ${QW_POOL.length} sourced quotations ${on} are shown.`;
 }
 function avatarSmall(id){
   const n=pnode(id);
@@ -2646,9 +2667,98 @@ function issuePanel(key){
     ${c.none?`<div style="margin-top:14px"><div class="k" style="text-transform:uppercase;letter-spacing:.09em;
       font-size:11.5px;color:var(--muted)">Unclassified — ${c.none}</div>
       <p class="note">${band("none").slice(0,24).map(n=>`<a href="#/p/${esc(n.id)}" onclick="detail('${esc(n.id)}');return false">${esc(n.en)}</a>`).join(", ")}${c.none>24?", …":""}
-      <br>No measured podium record and no sourced verbatim quotation, so no stance is asserted.</p></div>`:""}`;
+      <br>No measured podium record and no sourced verbatim quotation, so no stance is asserted.</p></div>`:""}
+    ${issueStatsHtml(key,"issues")}`;
   $("#issuePanel").scrollIntoView({block:"nearest",behavior:"smooth"});
 }
+// The MFA-podium and embassy layers Jamie asked to add "to the main issues" too, not only when
+// searching — shared between issuePanel (a controlled issue) and countryIssuePanel (a country,
+// which is not one of the controlled categories but which both of those corpora already cover
+// directly). bPodium is the SAME function the Briefing tab uses for this, reused rather than a
+// second renderer. `kind` ("issues" or "countries") has to be threaded through explicitly — an
+// earlier version hardcoded "issues" here, so a country search silently looked up
+// BRIEF_PODIUM.issues["Israel"] (nothing there) instead of BRIEF_PODIUM.countries["Israel"]
+// (which exists) and printed "not named at the podium" for a country that plainly is — caught by
+// checking the actual keys live before shipping, not assumed from the code reading right.
+function issueStatsHtml(key, kind){
+  const pod = BRIEF_PODIUM ? bPodium(key,kind,"MFA podium mentions") : "";
+  const embHtml = kind==="countries" ? embassyCountryHtml(key) : embassyIssueSampleHtml(key);
+  return (pod||embHtml) ? `<div class="podgrid" style="margin-top:16px">${pod}${embHtml}</div>` : "";
+}
+// A country is a field EMBASSY already carries directly (`e.country` / `e.countries`), so this
+// is a real total (n_articles), not a sample-based estimate — better data than the issue path
+// below can offer, because embassy postings are organised by country in the first place.
+function embassyCountryHtml(country){
+  const entries=Object.entries(EMBASSY).filter(([,e])=>e.country===country || (e.countries&&country in e.countries));
+  if(!entries.length) return "";
+  const n=entries.reduce((s,[,e])=>s+(e.countries&&e.countries[country]!=null?e.countries[country]:e.n_articles),0);
+  const firsts=entries.map(([,e])=>e.first).filter(Boolean).sort();
+  const lasts=entries.map(([,e])=>e.last).filter(Boolean).sort();
+  return `<div class="podblock"><h4>Chinese embassy reporting <span class="note">${n.toLocaleString()} articles</span></h4>
+    <p class="note">From the ${esc(country)} embassy's own site${entries.length>1?`, across ${entries.length} postings this atlas holds`:""},
+      ${fmtEmbDate(firsts[0])}–${fmtEmbDate(lasts[lasts.length-1])}.</p></div>`;
+}
+// EMBASSY (script 19) holds a per-posting SAMPLE of articles (`top`), not the full site, so for
+// an ISSUE (no country field to key on directly) a keyword count from it is illustrative — a real
+// hit rate in a real sample — never presented as a corpus-wide total the way the country path
+// above, or the MFA podium's own n/n_q figures, can be.
+function embassyIssueSampleHtml(key){
+  const rx=issueQuoteRx(key); if(!rx) return "";
+  const hits=[];
+  Object.entries(EMBASSY).forEach(([pid,e])=>(e.top||[]).forEach(a=>{ if(rx.test(a.title)) hits.push({...a,pid,country:e.country}); }));
+  if(!hits.length) return "";
+  hits.sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  return `<div class="podblock"><h4>Chinese embassy reporting
+      <span class="note">${hits.length} matching titles in the sample this atlas holds</span></h4>
+    <p class="note">Only a per-posting SAMPLE of each embassy's articles is held here (script 19),
+      not the full site — a real count, of a real sample, not a claim about the whole corpus.</p>
+    ${hits.slice(0,4).map(a=>`<div class="podx"><div class="pdh">${esc(fmtEmbDate(a.date))} · ${esc(a.country)}</div>
+      <div class="pa"><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.title)}</a></div></div>`).join("")}</div>`;
+}
+// A country isn't a controlled issue category, but a policymaker searching "Israel" almost
+// certainly means the country, not a topic — and both the MFA podium and embassy corpus already
+// key on country name directly (built for the Briefing tab), so this is a real answer, not a
+// workaround. People are drawn from the SAME portfolio-country index the Postings tab's "what
+// they cover" map already builds (expertIndex), and quotes are filtered by bTextTest — the exact
+// country-name matcher the Briefing tab uses to decide whether an answer is "about" a country.
+function countryIssuePanel(country){
+  ISSUE_ON=null;
+  $("#issueMap").querySelectorAll(".ibub").forEach(b=>b.classList.remove("on"));
+  const em=expertIndex();
+  let list=[]; em.forEach((v,k)=>{ if(cnorm(k)===cnorm(country)) list=list.concat(v); });
+  list=[...new Set(list)].sort((a,b)=>(b.score||0)-(a.score||0));
+  const test=bTextTest(country);
+  const rows=list.slice(0,20).map(n=>{
+    const qs=((PROFILES[n.id]||{}).stated_positions||[]).filter(x=>x.quote && test(x.quote));
+    return `<div class="qrow">${qs.map(q=>`<q${q.quote_lang==="zh"?' lang="zh"':''}>${esc(q.quote.slice(0,240))}${q.quote.length>240?"…":""}</q>`).join("")}
+      <div class="who"><a href="#/p/${esc(n.id)}" onclick="detail('${esc(n.id)}');return false">${esc(n.en)}</a>
+        ${n.zh?`<span lang="zh">${esc(n.zh)}</span>`:""}</div></div>`;
+  }).join("");
+  $("#issuePanel").innerHTML=`<h3 style="margin-top:0">${esc(country)}
+      <span class="note">${list.length} ${list.length===1?"person":"people"} — a country, not a controlled issue category</span></h3>
+    ${rows||'<p class="note">No researched person names this country in their portfolio.</p>'}
+    ${issueStatsHtml(country,"countries")}`;
+  $("#issuePanel").scrollIntoView({block:"nearest",behavior:"smooth"});
+}
+$("#issueSearch").addEventListener("input", e=>{
+  const q=e.target.value.toLowerCase().trim(); const box=$("#issuePicklist");
+  if(q.length<2){ box.style.display="none"; return; }
+  const issueHits=[...issueIndex().keys()].filter(k=>k.toLowerCase().includes(q)).slice(0,8).map(k=>({kind:"issue",name:k}));
+  const countryHits=MG.countries.map(c=>c.n).filter(n=>n.toLowerCase().includes(q)).slice(0,8).map(n=>({kind:"country",name:n}));
+  const hits=[...issueHits,...countryHits];
+  // Not an inline onclick with the name string-interpolated into it — a country name containing
+  // an apostrophe (this atlas's own list has a few) would break out of a single-quoted JS string
+  // inside the HTML attribute. Wired as real event listeners against each row instead, matched
+  // back to its hit by array index.
+  box.innerHTML=hits.map((h,i)=>`<div data-i="${i}">${esc(h.name)} <span class="note">${h.kind}</span></div>`).join("")
+    || '<div class="note">no match</div>';
+  box.querySelectorAll("[data-i]").forEach(el=>el.onclick=()=>{
+    const h=hits[+el.dataset.i];
+    (h.kind==="issue" ? issuePanel : countryIssuePanel)(h.name);
+    $("#issueSearch").value=""; box.style.display="none";
+  });
+  box.style.display="block";
+});
 
 /* ---------- institution classification ----------
    [Jamie, 2026-09-08: first "add a hierarchy tree by organisation? i.e MFA, MND, any others",
