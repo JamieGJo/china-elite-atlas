@@ -673,6 +673,28 @@ details.orgregion>summary::-webkit-details-marker{display:none}
 details.orgregion>summary:before{content:"› ";color:var(--slate)}
 details.orgregion[open]>summary:before{content:"⌄ ";color:var(--slate)}
 details.orgregion .orgunit{margin-left:4px}
+/* ---- Org tree, as a diagram (2026-09-13) ---- a breadcrumb-driven drill-down: one level of
+   boxes at a time, connected to a single "you are here" pill above by lines measured off the
+   real DOM (orgChartConnectors) rather than a charting library. Only one branch open at once —
+   the alternative, every branch expanded simultaneously, is a wall of boxes for a 522-person
+   roster, not a chart a reader can actually take in. */
+.orgcrumbs{display:flex;flex-wrap:wrap;align-items:center;gap:1px;margin:0 0 16px;font-size:12.5px}
+.orgcrumb{font:inherit;background:none;border:0;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:6px}
+.orgcrumb:last-child{color:var(--ink);font-weight:600;cursor:default}
+.orgcrumb:hover:not(:last-child){background:var(--shade);color:var(--ink)}
+.orgcrumbsep{color:var(--rule);margin:0 1px}
+.orghere{width:fit-content;margin:0 auto;text-align:center;font:600 15px Georgia,serif;line-height:1.4;
+  padding:10px 18px;border:1px solid var(--ink);border-radius:10px;background:var(--card);max-width:600px}
+.orgstage{position:relative;display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;
+  gap:16px 12px;padding:38px 10px 8px;margin-top:4px}
+.orglines{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.orgbox{font:inherit;text-align:center;background:var(--card);border:1px solid var(--rule);border-radius:10px;
+  padding:11px 15px;cursor:pointer;display:flex;flex-direction:column;gap:4px;width:150px;
+  position:relative;z-index:1;transition:border-color .12s,transform .12s,box-shadow .12s}
+.orgbox:hover,.orgbox:focus-visible{border-color:var(--accent);transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.08)}
+.ob-lab{font-weight:600;font-size:12.8px;line-height:1.3;overflow-wrap:break-word}
+.ob-n{font:700 17px Georgia,serif;color:var(--accent)}
+.ob-kind{font:10px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
 .pcard{border:1px solid var(--rule);border-radius:11px;background:var(--card);padding:13px 14px;cursor:pointer;
   display:flex;gap:12px;transition:border-color .12s,transform .12s;position:relative}
 .pcard:hover,.pcard:focus-visible{border-color:var(--accent);transform:translateY(-1px)}
@@ -1790,6 +1812,128 @@ function orgGroupHtml(label, people, open){
   return `<details class="orgunit"${open?" open":""}><summary>${esc(label)} <span class="note">${people.length}</span></summary>
     <div class="minigrid">${people.slice().sort(orgSort).map(pcardMini).join("")}</div></details>`;
 }
+/* ---------- Org tree, as an actual diagram (2026-09-13) ----------
+   Jamie: "we need to be able to visualise this not just list it" — the collapsible-disclosure
+   version above (renderOrgTree) is kept as-is (nothing broke it; the schema it reads is exactly
+   what feeds this too) but is no longer what the Org-tree view-mode shows. This builds the SAME
+   groupings — orgBucket/orgDept/orgMission/orgCountryRegion, unchanged — into an actual nested
+   TREE OBJECT instead of an HTML string, so it can be drawn as connected boxes and drilled into
+   one level at a time (a full always-expanded diagram of 868 MFA people would just be a wall of
+   boxes — a real org chart is browsed, not printed in full). A node is either a CATEGORY (has
+   `children`, more nodes to drill into) or a LEAF (has `people`, the actual roster entries) —
+   never both, so the renderer never has to guess which one it's looking at. */
+function buildOrgHierarchy(list){
+  const buckets=new Map(ORG_ORDER.map(k=>[k,[]]));
+  let skippedMap=0;
+  list.forEach(n=>{
+    const texts=orgTexts(n);
+    if(n.tier!=="researched" && !orgMission(n,texts) && !n.country){ skippedMap++; return; }
+    (buckets.get(orgBucket(n,texts))||buckets.get("OTHER")).push(n);
+  });
+  const children=ORG_ORDER.map(key=>{
+    const people=buckets.get(key);
+    if(!people.length) return null;
+    if(key!=="MFA") return {key, label:ORG_LABEL[key], count:people.length, people, note:ORG_NOTE[key]||null};
+    const lead=[], deptOf=new Map(), missionOf=new Map(), unplaced=[];
+    people.forEach(n=>{
+      const texts=orgTexts(n);
+      const mi=orgMission(n,texts);
+      if(mi){ (missionOf.get(mi)||missionOf.set(mi,[]).get(mi)).push(n); return; }
+      if(orgRankOf(n)<=3){ lead.push(n); return; }
+      const d=orgDept(texts);
+      if(d){ (deptOf.get(d)||deptOf.set(d,[]).get(d)).push(n); return; }
+      unplaced.push(n);
+    });
+    const mfaKids=[{key:"MFA.lead", label:"Ministry leadership", count:lead.length, people:lead}];
+    if(deptOf.size){
+      const deptKids=[...deptOf.entries()].sort((a,b)=>b[1].length-a[1].length)
+        .map(([name,ppl],i)=>({key:"MFA.dept."+i, label:name, count:ppl.length, people:ppl}));
+      mfaKids.push({key:"MFA.dept", label:"Headquarters departments",
+        count:deptKids.reduce((s,d)=>s+d.count,0), children:deptKids});
+    }
+    if(missionOf.size){
+      const byRegion=new Map();
+      [...missionOf.entries()].forEach(([country,ppl])=>{
+        const reg=orgCountryRegion().get(country)||"other";
+        (byRegion.get(reg)||byRegion.set(reg,[]).get(reg)).push({key:"MFA.miss."+country, label:country, count:ppl.length, people:ppl});
+      });
+      const regionOrder=[...Object.keys(ORG_REG_LABEL),"other"];
+      const regionKids=regionOrder.filter(r=>byRegion.has(r)).map(reg=>{
+        const countryKids=byRegion.get(reg).sort((a,b)=>b.count-a.count);
+        return {key:"MFA.miss."+reg, label:ORG_REG_LABEL[reg]||"Other missions",
+          count:countryKids.reduce((s,c)=>s+c.count,0), children:countryKids};
+      });
+      mfaKids.push({key:"MFA.miss", label:"Overseas missions",
+        count:regionKids.reduce((s,r)=>s+r.count,0), children:regionKids});
+    }
+    if(unplaced.length) mfaKids.push({key:"MFA.other", label:"Other headquarters roles",
+      count:unplaced.length, people:unplaced,
+      note:"A researched post that names neither a department nor an overseas posting clearly enough to group — special envoys and a few one-off roles mostly end up here."});
+    return {key:"MFA", label:ORG_LABEL.MFA, count:people.length, children:mfaKids, note:ORG_NOTE.MFA};
+  }).filter(Boolean);
+  return {key:"root", label:"China's foreign-policy apparatus", count:children.reduce((s,c)=>s+c.count,0),
+    children, skippedMap};
+}
+let ORG_HIER=null, ORG_PATH=["root"];
+function orgNodeAt(path){
+  let node=ORG_HIER;
+  for(const k of path.slice(1)){ node=(node.children||[]).find(c=>c.key===k); if(!node) return ORG_HIER; }
+  return node;
+}
+// Boxes are laid out by plain CSS (a wrapped flex row) — positions aren't known until AFTER
+// they're in the DOM, so the connector lines are a second pass: measure each box's real
+// getBoundingClientRect() against the container, then draw one trunk from the "you are here"
+// pill down to a horizontal bus, and one drop from the bus to each box. Same two-pass shape as
+// this file's other from-scratch SVG layouts (e.g. the network force diagram) — no charting
+// library, geometry read off the DOM instead of computed blind.
+function orgChartConnectors(){
+  const stage=$("#orgStage"); if(!stage) return;
+  const svg=$("#orgLines"); if(!svg) return;
+  const sBox=stage.getBoundingClientRect();
+  svg.setAttribute("width", sBox.width); svg.setAttribute("height", sBox.height);
+  svg.setAttribute("viewBox", `0 0 ${sBox.width} ${sBox.height}`);
+  const here=$("#orgHere");
+  const kids=[...stage.querySelectorAll(".orgbox")];
+  if(!here || !kids.length){ svg.innerHTML=""; return; }
+  const hb=here.getBoundingClientRect();
+  const x0=hb.left+hb.width/2-sBox.left, y0=hb.bottom-sBox.top;
+  const midY=y0+16;
+  let path=`M${x0.toFixed(1)} ${y0.toFixed(1)} V${midY.toFixed(1)}`;
+  const drops=kids.map(k=>{
+    const b=k.getBoundingClientRect();
+    const x=b.left+b.width/2-sBox.left, y=b.top-sBox.top;
+    return `M${x.toFixed(1)} ${midY.toFixed(1)} V${y.toFixed(1)}`;
+  }).join(" ");
+  const xs=kids.map(k=>{const b=k.getBoundingClientRect(); return b.left+b.width/2-sBox.left;});
+  const bus=xs.length>1 ? `M${Math.min(...xs).toFixed(1)} ${midY.toFixed(1)} H${Math.max(...xs).toFixed(1)}` : "";
+  svg.innerHTML=`<path d="${path} ${bus} ${drops}" fill="none" stroke="var(--rule)" stroke-width="1.6"/>`;
+}
+function orgChartRender(){
+  const node=orgNodeAt(ORG_PATH);
+  const crumbs=ORG_PATH.map((k,i)=>{
+    const n=orgNodeAt(ORG_PATH.slice(0,i+1));
+    return `<button class="orgcrumb" onclick="orgPathGo(${i})">${esc(n.label)}${n.count!=null?` <span class="note">${n.count}</span>`:""}</button>`;
+  }).join(`<span class="orgcrumbsep">›</span>`);
+  const isLeaf=!!node.people;
+  const body = isLeaf
+    ? `<div class="minigrid" style="max-width:820px;margin:0 auto">${node.people.slice().sort(orgSort).map(pcardMini).join("")}</div>`
+    : `<div id="orgStage" class="orgstage"><svg id="orgLines" class="orglines"></svg>
+        ${node.children.map(c=>`<button class="orgbox" data-key="${esc(c.key)}" onclick="orgPathPush('${esc(c.key)}')">
+          <span class="ob-lab">${esc(c.label)}</span><span class="ob-n">${c.count.toLocaleString()}</span>
+          <span class="ob-kind">${c.people?"people":"drill in →"}</span></button>`).join("")}
+      </div>`;
+  $("#orgwrap").innerHTML=`<div class="orgcrumbs">${crumbs}</div>
+    <div class="orghere" id="orgHere">${esc(node.label)}${node.note?`<span class="note" style="display:block;margin-top:4px;font-weight:400">${esc(node.note)}</span>`:""}</div>
+    ${body}
+    ${ORG_HIER.skippedMap?`<p class="note" style="margin-top:14px">${ORG_HIER.skippedMap.toLocaleString()} more, held only as a bare map entry with no post or country to place them by, are left off this view.</p>`:""}`;
+  $("#orgwrap").querySelectorAll(".minicard").forEach(c=>{
+    const go=()=>{const id=c.dataset.id; try{location.hash="#/p/"+id;}catch(e){} detail(id);};
+    c.onclick=go;
+  });
+  if(!isLeaf) requestAnimationFrame(orgChartConnectors);
+}
+function orgPathPush(key){ ORG_PATH=[...ORG_PATH, key]; orgChartRender(); }
+function orgPathGo(i){ ORG_PATH=ORG_PATH.slice(0,i+1); orgChartRender(); }
 function renderOrgTree(list){
   // map-tier (CDBD-only, never researched) people carry almost nothing to place beyond maybe a
   // country — worth keeping ONLY for filling out overseas missions, where CDBD's own coverage is
@@ -1915,8 +2059,11 @@ function render(){
   } else if(org){
     // Whole filtered set at once, no pagination — a tree is read by opening the branches you
     // want, not by scrolling further into a flat list, so "show more" has nothing to throttle
-    // here the way it does for the tier/card views.
-    $("#orgwrap").innerHTML=renderOrgTree(r);
+    // here the way it does for the tier/card views. Rebuilt (and the drill-down path reset to
+    // the top) on every render — a filter change can move people between buckets entirely, so a
+    // stale path deep into last render's tree wouldn't mean the same thing any more.
+    ORG_HIER=buildOrgHierarchy(r); ORG_PATH=["root"];
+    orgChartRender();
     slice=r.slice(0,S.limit);
   } else {
     slice=r.slice(0,S.limit);
